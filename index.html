@@ -1,0 +1,1160 @@
+<!--
+REVISED SINGLE-FILE APP (index.html)
+Implements requested Audience & Segment Constraints changes:
+1) Segments allowlist (multi-select) + "Prefill from historical campaign_type<>segment pattern" (simulated)
+2) Segment Scheduling Rules: max per segment day/week overall + per-channel caps
+3) Push Delivery Scope (Push-only) with "Suggest from historical data" toggle:
+   - OS targeting, Device types, Device reach
+4) Control Group with "Suggest from historical data" toggle:
+   - Global control group (System 2% default)
+   - Overrides by label/channel
+
+Paste as: constraints-prototype/index.html
+Then GitHub Pages serves it at:
+https://sonisoumya.github.io/constraints-prototype/
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Campaign Planning Constraints — Prototype</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <style>
+      html, body { height: 100%; }
+      input[type=number]::-webkit-outer-spin-button,
+      input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+      input[type=number] { -moz-appearance: textfield; }
+    </style>
+  </head>
+  <body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+      const { useMemo, useState, useEffect } = React;
+
+      // -------------------------
+      // Helpers / UI primitives
+      // -------------------------
+      function cx(...classes) { return classes.filter(Boolean).join(" "); }
+
+      function Pill({ tone, children }) {
+        const styles =
+          tone === "hard"
+            ? "bg-red-50 text-red-700 ring-red-200"
+            : tone === "soft"
+            ? "bg-blue-50 text-blue-700 ring-blue-200"
+            : "bg-amber-50 text-amber-800 ring-amber-200";
+        return (
+          <span className={cx("inline-flex items-center rounded-full px-2 py-0.5 text-xs ring-1", styles)}>
+            {children}
+          </span>
+        );
+      }
+
+      function Button({ variant="primary", children, onClick, disabled }) {
+        const base = "inline-flex items-center justify-center rounded-md px-4 py-2 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-slate-300 disabled:opacity-50 disabled:cursor-not-allowed";
+        const styles =
+          variant === "primary" ? "bg-blue-600 text-white hover:bg-blue-700"
+          : variant === "secondary" ? "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50"
+          : "bg-transparent text-slate-700 hover:bg-slate-100";
+        return <button className={cx(base, styles)} onClick={onClick} disabled={disabled}>{children}</button>;
+      }
+
+      function Select({ value, onChange, options, disabled=false }) {
+        return (
+          <select
+            disabled={disabled}
+            className={cx(
+              "h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 shadow-sm focus:border-slate-300 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400",
+            )}
+            value={String(value)}
+            onChange={(e) => onChange(e.target.value)}
+          >
+            {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        );
+      }
+
+      function Input({ value, onChange, placeholder, type="text", disabled=false, min, max, step }) {
+        return (
+          <input
+            type={type}
+            disabled={disabled}
+            min={min}
+            max={max}
+            step={step}
+            className={cx(
+              "h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 shadow-sm placeholder:text-slate-400 focus:border-slate-300 focus:outline-none disabled:bg-slate-50 disabled:text-slate-400"
+            )}
+            value={String(value)}
+            placeholder={placeholder}
+            onChange={(e) => onChange(e.target.value)}
+          />
+        );
+      }
+
+      function Toggle({ checked, onChange, label, disabled=false }) {
+        return (
+          <label className={cx("flex items-center gap-3 select-none", disabled ? "opacity-60 cursor-not-allowed" : "cursor-pointer")}>
+            <button
+              type="button"
+              disabled={disabled}
+              className={cx(
+                "relative inline-flex h-6 w-11 items-center rounded-full transition ring-1 ring-slate-200",
+                checked ? "bg-blue-600" : "bg-slate-200"
+              )}
+              onClick={() => !disabled && onChange(!checked)}
+            >
+              <span className={cx(
+                "inline-block h-5 w-5 transform rounded-full bg-white shadow transition",
+                checked ? "translate-x-5" : "translate-x-1"
+              )}/>
+            </button>
+            <span className="text-sm text-slate-700">{label}</span>
+          </label>
+        );
+      }
+
+      function Banner({ severity, title, body }) {
+        const styles =
+          severity === "error" ? "border-red-200 bg-red-50 text-red-900"
+          : "border-amber-200 bg-amber-50 text-amber-900";
+        return (
+          <div className={cx("rounded-md border px-4 py-3 text-sm", styles)}>
+            <div className="font-semibold">{title}</div>
+            <div className="mt-1 text-slate-700">{body}</div>
+          </div>
+        );
+      }
+
+      function SidebarItem({ label, active, activeSecondary }) {
+        return (
+          <div className={cx(
+            "my-1 flex items-center gap-2 rounded-md px-3 py-2 text-slate-700 hover:bg-slate-50",
+            active && "bg-blue-50 text-blue-700 ring-1 ring-blue-100",
+            activeSecondary && "bg-slate-100 text-slate-900"
+          )}>
+            <span className="h-5 w-5 rounded bg-slate-200/80" />
+            <span className="text-sm">{label}</span>
+          </div>
+        );
+      }
+
+      function Label({ title, help }) {
+        return (
+          <div className="flex items-start justify-between gap-3">
+            <div className="text-sm font-medium text-slate-900">{title}</div>
+            {help ? (
+              <span className="cursor-help rounded-md px-2 py-1 text-xs text-slate-500 hover:bg-slate-100" title={help} aria-label={help}>
+                ⓘ
+              </span>
+            ) : <span/>}
+          </div>
+        );
+      }
+
+      function SectionHeader({ title, subtitle, tone, open, onToggle }) {
+        return (
+          <button type="button" onClick={onToggle} className="flex w-full items-center justify-between px-6 py-4 text-left">
+            <div className="flex items-center gap-3">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">{title}</div>
+                {subtitle ? <div className="mt-0.5 text-xs text-slate-500">{subtitle}</div> : null}
+              </div>
+              <Pill tone={tone}>{tone === "hard" ? "Hard constraints" : "Soft / Preferences"}</Pill>
+            </div>
+            <div className="text-slate-600">{open ? "▾" : "▸"}</div>
+          </button>
+        );
+      }
+
+      function RowCard({ children }) {
+        return <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3">{children}</div>;
+      }
+
+      function AddRowButton({ onClick, label }) {
+        return (
+          <button
+            type="button"
+            onClick={onClick}
+            className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+          >
+            <span className="text-base leading-none">+</span>
+            {label}
+          </button>
+        );
+      }
+
+      function IconButton({ onClick, title }) {
+        return (
+          <button
+            type="button"
+            className="rounded-md p-2 text-slate-500 hover:bg-slate-100"
+            onClick={onClick}
+            title={title}
+            aria-label={title}
+          >
+            🗑
+          </button>
+        );
+      }
+
+      function clampInt(v, min=0, max=9999) {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return "";
+        return String(Math.max(min, Math.min(max, Math.floor(n))));
+      }
+
+      // Multi-select dropdown (simple, native-looking)
+      function MultiSelect({ label, help, options, valueSet, onChange }) {
+        const [open, setOpen] = useState(false);
+        const [q, setQ] = useState("");
+
+        const selected = Array.from(valueSet);
+        const filtered = options.filter(o => o.toLowerCase().includes(q.toLowerCase()));
+
+        return (
+          <div className="relative">
+            <Label title={label} help={help} />
+            <button
+              type="button"
+              className="mt-2 flex h-10 w-full items-center justify-between rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-800 shadow-sm hover:bg-slate-50"
+              onClick={() => setOpen(v => !v)}
+            >
+              <span className={cx("truncate", selected.length === 0 && "text-slate-400")}>
+                {selected.length === 0 ? "Select segments…" : selected.join(", ")}
+              </span>
+              <span className="text-slate-500">{open ? "▴" : "▾"}</span>
+            </button>
+
+            {open ? (
+              <div className="absolute z-30 mt-2 w-full rounded-md border border-slate-200 bg-white shadow-lg">
+                <div className="p-2 border-b border-slate-100">
+                  <Input value={q} onChange={setQ} placeholder="Search…" />
+                </div>
+
+                <div className="max-h-56 overflow-auto p-1">
+                  {filtered.length === 0 ? (
+                    <div className="px-3 py-2 text-sm text-slate-500">No matches</div>
+                  ) : filtered.map((opt) => {
+                    const checked = valueSet.has(opt);
+                    return (
+                      <label key={opt} className="flex cursor-pointer items-center gap-2 rounded px-3 py-2 text-sm hover:bg-slate-50">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const next = new Set(valueSet);
+                            if (e.target.checked) next.add(opt);
+                            else next.delete(opt);
+                            onChange(next);
+                          }}
+                          className="h-4 w-4 accent-blue-600"
+                        />
+                        <span className="text-slate-800">{opt}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-100 p-2">
+                  <button
+                    type="button"
+                    className="text-sm text-slate-600 hover:text-slate-900"
+                    onClick={() => onChange(new Set())}
+                  >
+                    Clear
+                  </button>
+                  <Button variant="secondary" onClick={() => setOpen(false)}>Done</Button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        );
+      }
+
+      // -------------------------
+      // Defaults / dictionaries
+      // -------------------------
+      const CHANNELS = ["Push", "WhatsApp", "Email", "SMS"];
+      const CAMPAIGN_LABELS = [
+        "Daily_Lending_Habit","Lumpsum_Push","Product_Update","Portfolio_Education","Reactivation","Feedback","Referral","Experimental"
+      ];
+
+      // Segment names used previously (sample)
+      const SEGMENT_NAMES = [
+        "All Users", "Active", "Dormant", "Never Invested", "High-Value", "New Users",
+        "Android Users", "iOS Users", "Investors - 7D", "Investors - 30D"
+      ];
+
+      // Historical campaign_type<>segment pattern (simulated)
+      // In real system: derived from last-year campaign logs.
+      const HISTORICAL_LABEL_TO_SEGMENTS = {
+        "Daily_Lending_Habit": ["All Users", "Active", "Investors - 7D"],
+        "Lumpsum_Push": ["High-Value", "Active"],
+        "Product_Update": ["All Users"],
+        "Portfolio_Education": ["All Users", "New Users"],
+        "Reactivation": ["Dormant", "Never Invested"],
+        "Feedback": ["Active"],
+        "Referral": ["Active", "New Users"],
+        "Experimental": ["All Users"]
+      };
+
+      // Suggested-from-history defaults (simulated)
+      const HIST_PUSH_SUGGEST = {
+        os: "Both",                 // Android | iOS | Both
+        devices: { Mobile:true, Tablet:false, TV:false },
+        reach: "Last active device" // All active devices | Last active device
+      };
+
+      const HIST_CONTROL_GROUP_SUGGEST = {
+        globalMode: "System 2%",
+        globalPercent: 2,
+        overrides: [
+          { scopeType:"Label", scopeValue:"Lumpsum_Push", mode:"Custom", percent:5, enabled:true },
+          { scopeType:"Channel", scopeValue:"Push", mode:"System 2%", percent:2, enabled:true }
+        ]
+      };
+
+      // -------------------------
+      // Main App
+      // -------------------------
+      function App() {
+        // Accordions (keep full page as before, but focus changes in Audience section)
+        const [openAudience, setOpenAudience] = useState(true);
+
+        // Global save snapshot
+        const [savedSnapshot, setSavedSnapshot] = useState(null);
+
+        // ---------------- Audience & Segment Constraints ----------------
+
+        // 1) Segment Name allowlist (multi-select)
+        const [segmentAllowlist, setSegmentAllowlist] = useState(() => new Set(["All Users", "Active", "Dormant"]));
+
+        // Prefill from historical campaign_type<>segment pattern
+        const [prefillFromHistory, setPrefillFromHistory] = useState(true);
+
+        // Derived: view-only matrix (label -> segments) based on history, filtered by allowlist
+        const historicalMatrix = useMemo(() => {
+          const rows = [];
+          for (const label of CAMPAIGN_LABELS) {
+            const segs = (HISTORICAL_LABEL_TO_SEGMENTS[label] || []).filter(s => segmentAllowlist.has(s));
+            rows.push({ label, segments: segs });
+          }
+          return rows;
+        }, [segmentAllowlist]);
+
+        // 2) Segment Scheduling Rules
+        // Overall caps per segment/day/week
+        const [segmentCapsOverall, setSegmentCapsOverall] = useState(() =>
+          SEGMENT_NAMES.map((s) => ({
+            segment: s,
+            enabled: s === "All Users" || s === "Active",
+            maxPerDay: s === "All Users" ? "2" : "1",
+            maxPerWeek: s === "All Users" ? "10" : "5"
+          }))
+        );
+
+        // Per-channel caps per segment/day/week
+        const [segmentCapsByChannel, setSegmentCapsByChannel] = useState(() => {
+          const rows = [];
+          for (const seg of SEGMENT_NAMES) {
+            rows.push({
+              segment: seg,
+              enabled: seg === "All Users" || seg === "Active",
+              caps: CHANNELS.map(ch => ({
+                channel: ch,
+                maxPerDay: ch === "Push" ? "2" : "1",
+                maxPerWeek: ch === "Push" ? "10" : "3"
+              }))
+            });
+          }
+          return rows;
+        });
+
+        // 3) Channel specific subsection: Push Delivery Scope
+        const [pushSuggestFromHistory, setPushSuggestFromHistory] = useState(true);
+        const [pushOs, setPushOs] = useState(HIST_PUSH_SUGGEST.os);
+        const [pushDeviceTypes, setPushDeviceTypes] = useState({ ...HIST_PUSH_SUGGEST.devices });
+        const [pushDeviceReach, setPushDeviceReach] = useState(HIST_PUSH_SUGGEST.reach);
+
+        // If "suggest from history" toggled ON, reset to suggested defaults
+        useEffect(() => {
+          if (pushSuggestFromHistory) {
+            setPushOs(HIST_PUSH_SUGGEST.os);
+            setPushDeviceTypes({ ...HIST_PUSH_SUGGEST.devices });
+            setPushDeviceReach(HIST_PUSH_SUGGEST.reach);
+          }
+        }, [pushSuggestFromHistory]);
+
+        // 5) Control Group
+        const [controlSuggestFromHistory, setControlSuggestFromHistory] = useState(true);
+        const [controlGlobalMode, setControlGlobalMode] = useState(HIST_CONTROL_GROUP_SUGGEST.globalMode); // System 2% | Custom | Off
+        const [controlGlobalPercent, setControlGlobalPercent] = useState(String(HIST_CONTROL_GROUP_SUGGEST.globalPercent));
+        const [controlOverrides, setControlOverrides] = useState(HIST_CONTROL_GROUP_SUGGEST.overrides);
+
+        useEffect(() => {
+          if (controlSuggestFromHistory) {
+            setControlGlobalMode(HIST_CONTROL_GROUP_SUGGEST.globalMode);
+            setControlGlobalPercent(String(HIST_CONTROL_GROUP_SUGGEST.globalPercent));
+            setControlOverrides(HIST_CONTROL_GROUP_SUGGEST.overrides);
+          }
+        }, [controlSuggestFromHistory]);
+
+        // ---------------- Validation ----------------
+        const validation = useMemo(() => {
+          // Ensure allowlist not empty (or agent has nothing to pick)
+          if (segmentAllowlist.size === 0) {
+            return { severity: "error", msg: "Segment allowlist is empty. Select at least one segment." };
+          }
+
+          // Validate caps are numeric if enabled
+          for (const r of segmentCapsOverall) {
+            if (!r.enabled) continue;
+            const d = Number(r.maxPerDay);
+            const w = Number(r.maxPerWeek);
+            if (!Number.isFinite(d) || d < 0) return { severity:"error", msg:`Overall caps: "${r.segment}" max/day must be ≥ 0.` };
+            if (!Number.isFinite(w) || w < 0) return { severity:"error", msg:`Overall caps: "${r.segment}" max/week must be ≥ 0.` };
+            if (w < d) return { severity:"warn", msg:`Overall caps: "${r.segment}" max/week is lower than max/day. Check intent.` };
+          }
+
+          for (const row of segmentCapsByChannel) {
+            if (!row.enabled) continue;
+            for (const c of row.caps) {
+              const d = Number(c.maxPerDay);
+              const w = Number(c.maxPerWeek);
+              if (!Number.isFinite(d) || d < 0) return { severity:"error", msg:`Per-channel caps: "${row.segment}" (${c.channel}) max/day must be ≥ 0.` };
+              if (!Number.isFinite(w) || w < 0) return { severity:"error", msg:`Per-channel caps: "${row.segment}" (${c.channel}) max/week must be ≥ 0.` };
+            }
+          }
+
+          // Control group validation
+          if (controlGlobalMode === "Custom") {
+            const p = Number(controlGlobalPercent);
+            if (!Number.isFinite(p) || p <= 0 || p >= 50) return { severity:"error", msg:"Control group % must be between 1 and 49 for Custom." };
+          }
+          for (const o of controlOverrides) {
+            if (!o.enabled) continue;
+            if (o.mode === "Custom") {
+              const p = Number(o.percent);
+              if (!Number.isFinite(p) || p <= 0 || p >= 50) return { severity:"error", msg:`Override ${o.scopeType}:${o.scopeValue} has invalid Custom % (1–49).` };
+            }
+          }
+
+          // Soft warning: if suggest toggles are off, remind user
+          if (!pushSuggestFromHistory || !controlSuggestFromHistory) {
+            return { severity:"warn", msg:"You have overridden historical suggestions. Ensure these settings match BFSI best practices." };
+          }
+
+          return { severity:"none", msg:"" };
+        }, [segmentAllowlist, segmentCapsOverall, segmentCapsByChannel, controlGlobalMode, controlGlobalPercent, controlOverrides, pushSuggestFromHistory, controlSuggestFromHistory]);
+
+        const canSave = validation.severity !== "error";
+
+        // ---------------- Save/Cancel/Restore ----------------
+        function buildPayload() {
+          return {
+            audience: {
+              segments: {
+                allowlist: Array.from(segmentAllowlist),
+                prefill_from_historical_label_segment_pattern: prefillFromHistory,
+                historical_label_to_segments_preview: historicalMatrix
+              },
+              segment_scheduling_rules: {
+                overall_caps: segmentCapsOverall
+                  .filter(r => r.enabled)
+                  .map(r => ({
+                    segment: r.segment,
+                    max_per_day: Number(r.maxPerDay),
+                    max_per_week: Number(r.maxPerWeek)
+                  })),
+                per_channel_caps: segmentCapsByChannel
+                  .filter(r => r.enabled)
+                  .map(r => ({
+                    segment: r.segment,
+                    caps: r.caps.map(c => ({
+                      channel: c.channel,
+                      max_per_day: Number(c.maxPerDay),
+                      max_per_week: Number(c.maxPerWeek)
+                    }))
+                  }))
+              },
+              push_delivery_scope: {
+                suggest_from_historical_data: pushSuggestFromHistory,
+                os_targeting: pushOs, // Android | iOS | Both
+                device_types: pushDeviceTypes, // Mobile/Tablet/TV booleans
+                device_reach: pushDeviceReach // All active devices | Last active device
+              },
+              control_group: {
+                suggest_from_historical_data: controlSuggestFromHistory,
+                global: {
+                  mode: controlGlobalMode,        // System 2% | Custom | Off
+                  percent: controlGlobalMode === "Custom" ? Number(controlGlobalPercent) : (controlGlobalMode === "System 2%" ? 2 : 0)
+                },
+                overrides: controlOverrides
+                  .filter(o => o.enabled)
+                  .map(o => ({
+                    scope_type: o.scopeType,      // Label | Channel
+                    scope_value: o.scopeValue,
+                    mode: o.mode,                 // System 2% | Custom | Off
+                    percent: o.mode === "Custom" ? Number(o.percent) : (o.mode === "System 2%" ? 2 : 0)
+                  }))
+              }
+            }
+          };
+        }
+
+        function save() {
+          if (!canSave) return;
+          const payload = buildPayload();
+          setSavedSnapshot(payload);
+          alert("Saved!\n\n" + JSON.stringify(payload, null, 2));
+        }
+
+        function restoreToDefault() {
+          setSegmentAllowlist(new Set(["All Users", "Active", "Dormant"]));
+          setPrefillFromHistory(true);
+
+          setSegmentCapsOverall(
+            SEGMENT_NAMES.map((s) => ({
+              segment: s,
+              enabled: s === "All Users" || s === "Active",
+              maxPerDay: s === "All Users" ? "2" : "1",
+              maxPerWeek: s === "All Users" ? "10" : "5"
+            }))
+          );
+
+          setSegmentCapsByChannel(() => {
+            const rows = [];
+            for (const seg of SEGMENT_NAMES) {
+              rows.push({
+                segment: seg,
+                enabled: seg === "All Users" || seg === "Active",
+                caps: CHANNELS.map(ch => ({
+                  channel: ch,
+                  maxPerDay: ch === "Push" ? "2" : "1",
+                  maxPerWeek: ch === "Push" ? "10" : "3"
+                }))
+              });
+            }
+            return rows;
+          });
+
+          setPushSuggestFromHistory(true);
+          setPushOs(HIST_PUSH_SUGGEST.os);
+          setPushDeviceTypes({ ...HIST_PUSH_SUGGEST.devices });
+          setPushDeviceReach(HIST_PUSH_SUGGEST.reach);
+
+          setControlSuggestFromHistory(true);
+          setControlGlobalMode(HIST_CONTROL_GROUP_SUGGEST.globalMode);
+          setControlGlobalPercent(String(HIST_CONTROL_GROUP_SUGGEST.globalPercent));
+          setControlOverrides(HIST_CONTROL_GROUP_SUGGEST.overrides);
+        }
+
+        function cancelChanges() {
+          // For this demo page: if nothing saved, revert to defaults
+          if (!savedSnapshot) return restoreToDefault();
+
+          // Restore from saved payload snapshot
+          const p = savedSnapshot.audience;
+
+          setSegmentAllowlist(new Set(p.segments.allowlist));
+          setPrefillFromHistory(!!p.segments.prefill_from_historical_label_segment_pattern);
+
+          // Rebuild cap states from payload (fallback to keep rows)
+          const overallMap = new Map(p.segment_scheduling_rules.overall_caps.map(x => [x.segment, x]));
+          setSegmentCapsOverall(prev => prev.map(r => {
+            const hit = overallMap.get(r.segment);
+            return hit ? { ...r, enabled:true, maxPerDay:String(hit.max_per_day), maxPerWeek:String(hit.max_per_week) } : { ...r, enabled:false };
+          }));
+
+          const perChMap = new Map(p.segment_scheduling_rules.per_channel_caps.map(x => [x.segment, x]));
+          setSegmentCapsByChannel(prev => prev.map(r => {
+            const hit = perChMap.get(r.segment);
+            if (!hit) return { ...r, enabled:false };
+            const capByChannel = new Map(hit.caps.map(c => [c.channel, c]));
+            return {
+              ...r,
+              enabled:true,
+              caps: r.caps.map(c => {
+                const cc = capByChannel.get(c.channel);
+                return cc ? { ...c, maxPerDay:String(cc.max_per_day), maxPerWeek:String(cc.max_per_week) } : c;
+              })
+            };
+          }));
+
+          setPushSuggestFromHistory(!!p.push_delivery_scope.suggest_from_historical_data);
+          setPushOs(p.push_delivery_scope.os_targeting);
+          setPushDeviceTypes(p.push_delivery_scope.device_types);
+          setPushDeviceReach(p.push_delivery_scope.device_reach);
+
+          setControlSuggestFromHistory(!!p.control_group.suggest_from_historical_data);
+          setControlGlobalMode(p.control_group.global.mode);
+          setControlGlobalPercent(String(p.control_group.global.percent || 2));
+          setControlOverrides(p.control_group.overrides.map(o => ({
+            scopeType: o.scope_type,
+            scopeValue: o.scope_value,
+            mode: o.mode,
+            percent: o.percent,
+            enabled: true
+          })));
+        }
+
+        // Auto-apply avoidWeekends logic isn't requested here; kept out.
+        // Prefill toggle "Segmentation - Use historical pattern": for prototype we show preview table.
+        // In production this would seed segment suggestions per label.
+
+        // ---------------- Render ----------------
+        return (
+          <div className="min-h-screen">
+            {/* Top bar */}
+            <div className="h-14 w-full bg-[#2b2f77] text-white">
+              <div className="mx-auto flex h-full max-w-[1440px] items-center justify-between px-5">
+                <div className="flex items-center gap-3">
+                  <div className="text-sm font-semibold tracking-wide">CleverTap</div>
+                  <div className="h-5 w-px bg-white/20" />
+                  <div className="text-sm font-medium">Bearded Robot</div>
+                  <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-xs text-emerald-100 ring-1 ring-emerald-400/30">
+                    LIVE PROJECT
+                  </span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">✦ Ask</button>
+                  <button className="rounded-md px-2 py-1.5 text-sm hover:bg-white/10">?</button>
+                  <button className="rounded-full bg-white/15 px-3 py-1 text-sm">S</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mx-auto flex max-w-[1440px]">
+              {/* Sidebar */}
+              <aside className="w-[280px] border-r border-slate-200 bg-white">
+                <div className="px-4 py-4">
+                  <div className="text-sm font-semibold text-slate-900">Settings</div>
+                </div>
+
+                <nav className="px-2 pb-8 text-sm">
+                  <SidebarItem label="Project" active />
+                  <SidebarItem label="User Identity" />
+                  <SidebarItem label="Schema" />
+                  <SidebarItem label="Users" />
+                  <SidebarItem label="Roles" />
+                  <SidebarItem label="Security" />
+
+                  <div className="mt-6 px-3 text-xs font-semibold text-slate-400">ENGAGE</div>
+                  <SidebarItem label="Channels" />
+                  <SidebarItem label="Setup" />
+                  <SidebarItem label="Catalogs" />
+                  <SidebarItem label="Recommendation" />
+                  <SidebarItem label="Geofence" />
+
+                  <div className="mt-6 px-3 text-xs font-semibold text-slate-400">AI / CAMPAIGN PLANNING</div>
+                  <SidebarItem label="Constraints" activeSecondary />
+                </nav>
+              </aside>
+
+              {/* Main */}
+              <main className="flex-1 bg-slate-50">
+                <div className="px-8 py-6">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="text-xl font-semibold text-slate-900">Campaign Planning Constraints</div>
+                      <div className="mt-1 text-sm text-slate-600">Audience & Segment constraints (updated prototype).</div>
+                    </div>
+                    <Button variant="secondary" onClick={save} disabled={!canSave}>Save</Button>
+                  </div>
+
+                  <div className="mt-5 border-b border-slate-200" />
+
+                  {validation.severity !== "none" ? (
+                    <div className="mt-6">
+                      <Banner
+                        severity={validation.severity}
+                        title={validation.severity === "error" ? "Fix configuration errors" : "Review recommendations"}
+                        body={validation.msg}
+                      />
+                    </div>
+                  ) : null}
+
+                  {/* ---------------- Audience & Segment Constraints (Accordion) ---------------- */}
+                  <div className="mt-6 rounded-lg border border-slate-200 bg-white">
+                    <SectionHeader
+                      title="Audience & Segment Constraints"
+                      subtitle="Control which segments the agent can use, caps per segment, push delivery scope, and control group."
+                      tone="hard"
+                      open={openAudience}
+                      onToggle={() => setOpenAudience(v => !v)}
+                    />
+
+                    {openAudience ? (
+                      <div className="border-t border-slate-200 px-6 py-6 space-y-6">
+
+                        {/* 1) Segments allowlist + prefill */}
+                        <RowCard>
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium text-slate-900">1. Segments</div>
+                                <Pill tone="hard">Hard</Pill>
+                              </div>
+                              <div className="mt-1 text-xs text-slate-600">
+                                Segment Name allowlist controls which segments the agent is allowed to target.
+                              </div>
+                            </div>
+
+                            <Toggle
+                              checked={prefillFromHistory}
+                              onChange={setPrefillFromHistory}
+                              label="Prefill from historical label↔segment pattern"
+                            />
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-12 gap-6">
+                            <div className="col-span-12 md:col-span-6">
+                              <MultiSelect
+                                label="Segment allowlist"
+                                help="Hard limit. The agent cannot plan campaigns for segments not selected here."
+                                options={SEGMENT_NAMES}
+                                valueSet={segmentAllowlist}
+                                onChange={setSegmentAllowlist}
+                              />
+                              <div className="mt-2 text-xs text-slate-500">
+                                Selected: {segmentAllowlist.size} segments
+                              </div>
+                            </div>
+
+                            <div className="col-span-12 md:col-span-6">
+                              <div className="text-sm font-medium text-slate-900">Historical label↔segment preview</div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                Preview is filtered by the allowlist. (Simulated from history for this prototype.)
+                              </div>
+
+                              <div className="mt-3 rounded-md border border-slate-200 bg-white overflow-hidden">
+                                <div className="grid grid-cols-12 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 border-b border-slate-200">
+                                  <div className="col-span-5">Campaign Label</div>
+                                  <div className="col-span-7">Segments (from history)</div>
+                                </div>
+                                <div className="max-h-56 overflow-auto divide-y divide-slate-100">
+                                  {historicalMatrix.map(r => (
+                                    <div key={r.label} className="grid grid-cols-12 px-3 py-2 text-sm">
+                                      <div className="col-span-5 font-medium text-slate-900">{r.label}</div>
+                                      <div className="col-span-7 text-slate-700">
+                                        {prefillFromHistory ? (r.segments.length ? r.segments.join(", ") : <span className="text-slate-400">No allowed segments from history</span>) : <span className="text-slate-400">Prefill disabled</span>}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="mt-2 text-xs text-slate-500">
+                                In production, this seeds the agent’s default segment choices per label.
+                              </div>
+                            </div>
+                          </div>
+                        </RowCard>
+
+                        {/* 2) Segment Scheduling Rules */}
+                        <RowCard>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium text-slate-900">2. Segment Scheduling Rules</div>
+                                <Pill tone="hard">Hard</Pill>
+                              </div>
+                              <div className="mt-1 text-xs text-slate-600">
+                                Enforce max campaigns per segment per day/week (overall + per channel).
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-12 gap-6">
+                            {/* Overall caps */}
+                            <div className="col-span-12 lg:col-span-6">
+                              <div className="text-sm font-semibold text-slate-900">Overall caps (all channels)</div>
+                              <div className="mt-1 text-xs text-slate-500">Applies to any campaign targeting that segment.</div>
+
+                              <div className="mt-3 rounded-md border border-slate-200 bg-white overflow-hidden">
+                                <div className="grid grid-cols-12 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 border-b border-slate-200">
+                                  <div className="col-span-5">Segment</div>
+                                  <div className="col-span-2 text-center">On</div>
+                                  <div className="col-span-2 text-center">Max/day</div>
+                                  <div className="col-span-3 text-center">Max/week</div>
+                                </div>
+
+                                <div className="max-h-72 overflow-auto divide-y divide-slate-100">
+                                  {segmentCapsOverall
+                                    .filter(r => segmentAllowlist.has(r.segment))
+                                    .map((r) => (
+                                    <div key={r.segment} className="grid grid-cols-12 items-center gap-2 px-3 py-2 text-sm">
+                                      <div className="col-span-5 font-medium text-slate-900">{r.segment}</div>
+                                      <div className="col-span-2 flex justify-center">
+                                        <input
+                                          type="checkbox"
+                                          checked={r.enabled}
+                                          onChange={(e) => setSegmentCapsOverall(prev => prev.map(x => x.segment===r.segment ? { ...x, enabled:e.target.checked } : x))}
+                                          className="h-4 w-4 accent-blue-600"
+                                        />
+                                      </div>
+                                      <div className="col-span-2">
+                                        <Input
+                                          type="number"
+                                          min="0"
+                                          disabled={!r.enabled}
+                                          value={r.maxPerDay}
+                                          onChange={(v) => setSegmentCapsOverall(prev => prev.map(x => x.segment===r.segment ? { ...x, maxPerDay: clampInt(v, 0, 99) } : x))}
+                                        />
+                                      </div>
+                                      <div className="col-span-3">
+                                        <Input
+                                          type="number"
+                                          min="0"
+                                          disabled={!r.enabled}
+                                          value={r.maxPerWeek}
+                                          onChange={(v) => setSegmentCapsOverall(prev => prev.map(x => x.segment===r.segment ? { ...x, maxPerWeek: clampInt(v, 0, 999) } : x))}
+                                        />
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Per-channel caps */}
+                            <div className="col-span-12 lg:col-span-6">
+                              <div className="text-sm font-semibold text-slate-900">Per-channel caps (configuration)</div>
+                              <div className="mt-1 text-xs text-slate-500">Overrides overall caps for specific channels.</div>
+
+                              <div className="mt-3 rounded-md border border-slate-200 bg-white overflow-hidden">
+                                <div className="grid grid-cols-12 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600 border-b border-slate-200">
+                                  <div className="col-span-4">Segment</div>
+                                  <div className="col-span-2 text-center">On</div>
+                                  <div className="col-span-6 text-center">Caps per channel</div>
+                                </div>
+
+                                <div className="max-h-72 overflow-auto divide-y divide-slate-100">
+                                  {segmentCapsByChannel
+                                    .filter(r => segmentAllowlist.has(r.segment))
+                                    .map((row) => (
+                                    <div key={row.segment} className="px-3 py-3">
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="text-sm font-medium text-slate-900">{row.segment}</div>
+                                        <label className="flex items-center gap-2 text-sm text-slate-700">
+                                          <input
+                                            type="checkbox"
+                                            checked={row.enabled}
+                                            onChange={(e) => setSegmentCapsByChannel(prev => prev.map(x => x.segment===row.segment ? { ...x, enabled:e.target.checked } : x))}
+                                            className="h-4 w-4 accent-blue-600"
+                                          />
+                                          Enabled
+                                        </label>
+                                      </div>
+
+                                      <div className="mt-2 grid grid-cols-12 gap-2">
+                                        {row.caps.map((c) => (
+                                          <div key={c.channel} className="col-span-12 md:col-span-6 rounded-md border border-slate-200 bg-slate-50 p-2">
+                                            <div className="flex items-center justify-between">
+                                              <div className="text-xs font-semibold text-slate-700">{c.channel}</div>
+                                              <span className="text-[11px] text-slate-500">day/week</span>
+                                            </div>
+                                            <div className="mt-2 grid grid-cols-12 gap-2">
+                                              <div className="col-span-6">
+                                                <Input
+                                                  type="number"
+                                                  min="0"
+                                                  disabled={!row.enabled}
+                                                  value={c.maxPerDay}
+                                                  onChange={(v) => setSegmentCapsByChannel(prev => prev.map(x => {
+                                                    if (x.segment !== row.segment) return x;
+                                                    return {
+                                                      ...x,
+                                                      caps: x.caps.map(cc => cc.channel===c.channel ? { ...cc, maxPerDay: clampInt(v, 0, 99) } : cc)
+                                                    };
+                                                  }))}
+                                                />
+                                              </div>
+                                              <div className="col-span-6">
+                                                <Input
+                                                  type="number"
+                                                  min="0"
+                                                  disabled={!row.enabled}
+                                                  value={c.maxPerWeek}
+                                                  onChange={(v) => setSegmentCapsByChannel(prev => prev.map(x => {
+                                                    if (x.segment !== row.segment) return x;
+                                                    return {
+                                                      ...x,
+                                                      caps: x.caps.map(cc => cc.channel===c.channel ? { ...cc, maxPerWeek: clampInt(v, 0, 999) } : cc)
+                                                    };
+                                                  }))}
+                                                />
+                                              </div>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </RowCard>
+
+                        {/* 3) Push Delivery Scope */}
+                        <RowCard>
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium text-slate-900">3. Push Delivery Scope (Push only)</div>
+                                <Pill tone="hard">Hard</Pill>
+                              </div>
+                              <div className="mt-1 text-xs text-slate-600">
+                                Applies only to Mobile Push campaigns.
+                              </div>
+                            </div>
+
+                            <Toggle
+                              checked={pushSuggestFromHistory}
+                              onChange={setPushSuggestFromHistory}
+                              label="Suggest from historical data"
+                            />
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-12 gap-6">
+                            <div className="col-span-12 md:col-span-4">
+                              <Label title="a. OS targeting" help="Android / iOS / Both" />
+                              <div className="mt-2">
+                                <Select
+                                  value={pushOs}
+                                  onChange={setPushOs}
+                                  disabled={pushSuggestFromHistory}
+                                  options={[
+                                    { label: "Both", value: "Both" },
+                                    { label: "Android", value: "Android" },
+                                    { label: "iOS", value: "iOS" }
+                                  ]}
+                                />
+                              </div>
+                              {pushSuggestFromHistory ? <div className="mt-2 text-xs text-slate-500">Locked to historical suggestion.</div> : null}
+                            </div>
+
+                            <div className="col-span-12 md:col-span-4">
+                              <Label title="b. Device types" help="Choose device types eligible for delivery." />
+                              <div className="mt-2 space-y-2">
+                                {["Mobile","Tablet","TV"].map((k) => (
+                                  <label key={k} className={cx("flex items-center gap-2 text-sm", pushSuggestFromHistory && "opacity-60")}>
+                                    <input
+                                      type="checkbox"
+                                      disabled={pushSuggestFromHistory}
+                                      checked={!!pushDeviceTypes[k]}
+                                      onChange={(e) => setPushDeviceTypes(prev => ({ ...prev, [k]: e.target.checked }))}
+                                      className="h-4 w-4 accent-blue-600"
+                                    />
+                                    <span className="text-slate-700">{k}</span>
+                                  </label>
+                                ))}
+                              </div>
+                              {pushSuggestFromHistory ? <div className="mt-2 text-xs text-slate-500">Locked to historical suggestion.</div> : null}
+                            </div>
+
+                            <div className="col-span-12 md:col-span-4">
+                              <Label title="c. Device reach" help="All active devices vs Last active device" />
+                              <div className="mt-2">
+                                <Select
+                                  value={pushDeviceReach}
+                                  onChange={setPushDeviceReach}
+                                  disabled={pushSuggestFromHistory}
+                                  options={[
+                                    { label: "All active devices", value: "All active devices" },
+                                    { label: "Last active device", value: "Last active device" }
+                                  ]}
+                                />
+                              </div>
+                              {pushSuggestFromHistory ? <div className="mt-2 text-xs text-slate-500">Locked to historical suggestion.</div> : null}
+                            </div>
+                          </div>
+                        </RowCard>
+
+                        {/* 5) Control Group */}
+                        <RowCard>
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <div className="text-sm font-medium text-slate-900">5. Control Group</div>
+                                <Pill tone="hard">Hard</Pill>
+                              </div>
+                              <div className="mt-1 text-xs text-slate-600">
+                                Configure global control group and overrides by label/channel.
+                              </div>
+                            </div>
+
+                            <Toggle
+                              checked={controlSuggestFromHistory}
+                              onChange={setControlSuggestFromHistory}
+                              label="Suggest from historical data"
+                            />
+                          </div>
+
+                          {/* Global */}
+                          <div className="mt-4 grid grid-cols-12 gap-6">
+                            <div className="col-span-12 md:col-span-6">
+                              <Label title="Global control group" help="Default control group for all campaigns." />
+                              <div className="mt-2 grid grid-cols-12 gap-2">
+                                <div className="col-span-7">
+                                  <Select
+                                    value={controlGlobalMode}
+                                    onChange={setControlGlobalMode}
+                                    disabled={controlSuggestFromHistory}
+                                    options={[
+                                      { label: "System 2%", value: "System 2%" },
+                                      { label: "Custom", value: "Custom" },
+                                      { label: "Off", value: "Off" }
+                                    ]}
+                                  />
+                                </div>
+                                <div className="col-span-5">
+                                  <Input
+                                    type="number"
+                                    min="1"
+                                    max="49"
+                                    disabled={controlSuggestFromHistory || controlGlobalMode !== "Custom"}
+                                    value={controlGlobalPercent}
+                                    onChange={(v) => setControlGlobalPercent(String(clampInt(v, 1, 49)))}
+                                    placeholder="%"
+                                  />
+                                </div>
+                              </div>
+                              <div className="mt-2 text-xs text-slate-500">
+                                Default is <b>System (2%)</b>. Custom allowed 1–49%.
+                              </div>
+                            </div>
+
+                            {/* Overrides */}
+                            <div className="col-span-12 md:col-span-6">
+                              <div className="flex items-center justify-between">
+                                <div>
+                                  <div className="text-sm font-medium text-slate-900">Overrides by label/channel</div>
+                                  <div className="mt-1 text-xs text-slate-500">These override the global setting when enabled.</div>
+                                </div>
+                                <AddRowButton
+                                  label="Add override"
+                                  onClick={() => setControlOverrides(prev => [
+                                    ...prev,
+                                    { scopeType:"Label", scopeValue:"Daily_Lending_Habit", mode:"System 2%", percent:2, enabled:true }
+                                  ])}
+                                />
+                              </div>
+
+                              <div className="mt-3 space-y-3">
+                                {controlOverrides.map((o, idx) => (
+                                  <div key={idx} className="rounded-md border border-slate-200 bg-white p-3">
+                                    <div className="grid grid-cols-12 gap-2 items-center">
+                                      <div className="col-span-4">
+                                        <Select
+                                          value={o.scopeType}
+                                          onChange={(v) => setControlOverrides(prev => prev.map((x,i)=> i===idx ? { ...x, scopeType:v } : x))}
+                                          disabled={controlSuggestFromHistory}
+                                          options={[
+                                            { label:"Label", value:"Label" },
+                                            { label:"Channel", value:"Channel" }
+                                          ]}
+                                        />
+                                      </div>
+                                      <div className="col-span-4">
+                                        <Select
+                                          value={o.scopeValue}
+                                          onChange={(v) => setControlOverrides(prev => prev.map((x,i)=> i===idx ? { ...x, scopeValue:v } : x))}
+                                          disabled={controlSuggestFromHistory}
+                                          options={
+                                            (o.scopeType === "Channel" ? CHANNELS : CAMPAIGN_LABELS).map(v => ({ label:v, value:v }))
+                                          }
+                                        />
+                                      </div>
+                                      <div className="col-span-3">
+                                        <Select
+                                          value={o.mode}
+                                          onChange={(v) => setControlOverrides(prev => prev.map((x,i)=> i===idx ? { ...x, mode:v } : x))}
+                                          disabled={controlSuggestFromHistory}
+                                          options={[
+                                            { label:"System 2%", value:"System 2%" },
+                                            { label:"Custom", value:"Custom" },
+                                            { label:"Off", value:"Off" }
+                                          ]}
+                                        />
+                                      </div>
+                                      <div className="col-span-1 flex justify-end">
+                                        <IconButton
+                                          title="Remove"
+                                          onClick={() => setControlOverrides(prev => prev.filter((_,i)=> i!==idx))}
+                                        />
+                                      </div>
+
+                                      <div className="col-span-12 flex items-center justify-between mt-2">
+                                        <label className={cx("flex items-center gap-2 text-sm", controlSuggestFromHistory && "opacity-60")}>
+                                          <input
+                                            type="checkbox"
+                                            checked={o.enabled}
+                                            disabled={controlSuggestFromHistory}
+                                            onChange={(e) => setControlOverrides(prev => prev.map((x,i)=> i===idx ? { ...x, enabled:e.target.checked } : x))}
+                                            className="h-4 w-4 accent-blue-600"
+                                          />
+                                          Enabled
+                                        </label>
+
+                                        <div className="flex items-center gap-2">
+                                          <span className="text-xs text-slate-500">Custom %</span>
+                                          <div className="w-24">
+                                            <Input
+                                              type="number"
+                                              min="1"
+                                              max="49"
+                                              disabled={controlSuggestFromHistory || o.mode !== "Custom"}
+                                              value={String(o.percent)}
+                                              onChange={(v) => setControlOverrides(prev => prev.map((x,i)=> i===idx ? { ...x, percent: Number(clampInt(v,1,49)) || 2 } : x))}
+                                            />
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      {controlSuggestFromHistory ? (
+                                        <div className="col-span-12 mt-2 text-xs text-slate-500">
+                                          Overrides locked to historical suggestion. Toggle off to edit.
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </RowCard>
+
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+
+                {/* Sticky bottom actions */}
+                <div className="sticky bottom-0 border-t border-slate-200 bg-white">
+                  <div className="mx-auto flex max-w-[1440px] items-center justify-end gap-3 px-8 py-3">
+                    <Button variant="ghost" onClick={cancelChanges}>Cancel</Button>
+                    <Button variant="secondary" onClick={restoreToDefault}>Restore to Default</Button>
+                    <Button variant="primary" onClick={save} disabled={!canSave}>Save</Button>
+                  </div>
+                </div>
+              </main>
+            </div>
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
